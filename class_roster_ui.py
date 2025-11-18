@@ -341,6 +341,7 @@ class ClassRosterGUI(QMainWindow):
         stage1_label.setStyleSheet("color: #2196F3;")
         stage1_container.addWidget(stage1_label)
 
+
         stage1_desc = QLabel(
             "Convert raw school data\n(various formats) into\none standardized Excel file"
         )
@@ -370,6 +371,22 @@ class ClassRosterGUI(QMainWindow):
         
         raw_browse_btn = QPushButton("Browse...")
         raw_browse_btn.setFixedWidth(100)
+        raw_browse_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #f0f0f0;
+                color: #333;
+                border: 1px solid #ddd;
+                border-radius: 4px;
+                padding: 5px;
+            }
+            QPushButton:hover {
+                background-color: #e0e0e0;
+                border: 1px solid #aaa;
+            }
+            QPushButton:pressed {
+                background-color: #d0d0d0;
+            }
+        """)
         raw_browse_btn.clicked.connect(self.browse_raw_source)
         raw_source_row.addWidget(raw_browse_btn)
         stage1_layout.addLayout(raw_source_row)
@@ -383,6 +400,22 @@ class ClassRosterGUI(QMainWindow):
         
         std_save_btn = QPushButton("Save As...")
         std_save_btn.setFixedWidth(100)
+        std_save_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #f0f0f0;
+                color: #333;
+                border: 1px solid #ddd;
+                border-radius: 4px;
+                padding: 5px;
+            }
+            QPushButton:hover {
+                background-color: #e0e0e0;
+                border: 1px solid #aaa;
+            }
+            QPushButton:pressed {
+                background-color: #d0d0d0;
+            }
+        """)
         std_save_btn.clicked.connect(self.browse_std_output)
         std_output_row.addWidget(std_save_btn)
         stage1_layout.addLayout(std_output_row)
@@ -439,6 +472,7 @@ class ClassRosterGUI(QMainWindow):
         stage2_label.setFont(stage2_font)
         stage2_label.setStyleSheet("color: #4CAF50;")
         stage2_container.addWidget(stage2_label)
+       
 
         stage2_desc = QLabel(
             "Take standardized Excel file\nand split into separate\nsheets per class"
@@ -460,6 +494,22 @@ class ClassRosterGUI(QMainWindow):
         
         split_browse_btn = QPushButton("Browse...")
         split_browse_btn.setFixedWidth(100)
+        split_browse_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #f0f0f0;
+                color: #333;
+                border: 1px solid #ddd;
+                border-radius: 4px;
+                padding: 5px;
+            }
+            QPushButton:hover {
+                background-color: #e0e0e0;
+                border: 1px solid #aaa;
+            }
+            QPushButton:pressed {
+                background-color: #d0d0d0;
+            }
+        """)
         split_browse_btn.clicked.connect(self.browse_split_source)
         split_source_row.addWidget(split_browse_btn)
         stage2_layout.addLayout(split_source_row)
@@ -473,6 +523,22 @@ class ClassRosterGUI(QMainWindow):
         
         split_save_btn = QPushButton("Save As...")
         split_save_btn.setFixedWidth(100)
+        split_save_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #f0f0f0;
+                color: #333;
+                border: 1px solid #ddd;
+                border-radius: 4px;
+                padding: 5px;
+            }
+            QPushButton:hover {
+                background-color: #e0e0e0;
+                border: 1px solid #aaa;
+            }
+            QPushButton:pressed {
+                background-color: #d0d0d0;
+            }
+        """)
         split_save_btn.clicked.connect(self.browse_split_output)
         split_output_row.addWidget(split_save_btn)
         stage2_layout.addLayout(split_output_row)
@@ -507,6 +573,7 @@ class ClassRosterGUI(QMainWindow):
 
         stage2_group.setLayout(stage2_layout)
         stage2_group.setStyleSheet("border: 1px solid #ddd; border-radius: 5px; padding: 10px;")
+        stage2_container.addSpacing(10)  # Add 15px space above the box
         stage2_container.addWidget(stage2_group)
         stage2_container.addStretch()
         
