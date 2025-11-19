@@ -648,23 +648,25 @@ class JSONUniversalCleaningStage(DataCleaningStage):
         # First, extract metadata from title rows (before looking for headers)
         metadata_class, metadata_teacher = self._extract_metadata_from_title_rows(worksheet)
         
-        # Find potential header row (look in first 10 rows)
+        # Find potential header row by scanning more rows and scoring each candidate
+        # This is more universal - finds actual headers even if there's empty/title rows above
+        # Some school PDFs converted to Excel can start data at row 30, 40, or even later
         header_row_idx = None
         headers = []
+        best_score = 0
+        max_scan_rows = min(100, worksheet.max_row)  # Scan up to first 100 rows
         
-        for row_idx, row in enumerate(worksheet.iter_rows(min_row=1, max_row=10, values_only=True)):
-            if self._looks_like_header_row(row):
+        for row_idx, row in enumerate(worksheet.iter_rows(min_row=1, max_row=max_scan_rows, values_only=True)):
+            score = self._score_header_row(row)
+            if score > best_score:
+                best_score = score
                 header_row_idx = row_idx + 1  # 1-indexed
                 headers = [self._clean_header(cell) for cell in row]
-                break
         
-        # If no headers found, use first non-empty row
-        if header_row_idx is None:
-            for row_idx, row in enumerate(worksheet.iter_rows(min_row=1, max_row=20, values_only=True)):
-                if any(cell for cell in row):
-                    header_row_idx = row_idx + 1
-                    headers = [f"Column_{i}" for i in range(len(row))]
-                    break
+        # If no good header found (score too low), treat as headerless
+        if best_score < 5:  # Threshold: need at least score of 5
+            header_row_idx = None
+            headers = []
         
         # Extract data rows
         data_rows = []
@@ -902,35 +904,120 @@ class JSONUniversalCleaningStage(DataCleaningStage):
         }
     
     def _looks_like_header_row(self, row) -> bool:
-        """Determine if row looks like headers"""
+        """Determine if row looks like headers (legacy method - use _score_header_row for better detection)"""
+        return self._score_header_row(row) >= 5
+    
+    def _score_header_row(self, row) -> int:
+        """
+        Score a row based on how likely it is to be a header row.
+        Higher score = more likely to be a header.
+        
+        Scoring criteria:
+        - Contains common header keywords AS THE MAIN CONTENT (10 points each)
+        - Multiple non-empty cells (1 point per cell, max 5)
+        - Mostly text (not numbers) (3 points if >70% text)
+        - Has "ID", "Name", or other field patterns (5 points each)
+        - NOT a title row pattern (-10 points)
+        - NOT data with "Class XXX" pattern (strong indicator it's data, not header)
+        """
         if not row:
-            return False
+            return 0
+        
+        score = 0
         
         # Count non-empty cells
         non_empty_count = sum(1 for cell in row if cell is not None and str(cell).strip())
         
         # Skip if only 1 cell has content (likely a title row like "CLASS LIST")
         if non_empty_count < 2:
-            return False
+            return 0
         
-        # Skip common title patterns
+        # Bonus for multiple columns (up to 5 points)
+        score += min(non_empty_count, 5)
+        
+        # Check for title patterns (strong negative)
         first_cell = str(row[0]).strip().upper() if row[0] else ""
         title_patterns = ['CLASS LIST', 'ROSTER', 'STUDENT LIST', 'SITE:', 'YEAR:']
         if any(first_cell.startswith(pattern) for pattern in title_patterns):
-            return False
+            return 0  # Definitely not a header
         
-        # Count text cells vs numeric cells
+        # Check if this looks like actual data (strong negative signals)
+        # Pattern: "Class 101", "Class 102" - this is data, not a header
+        for cell in row:
+            if cell:
+                cell_str = str(cell).strip()
+                # Check for "Class XXX" pattern (where XXX is a number/code)
+                if 'class' in cell_str.lower():
+                    # If it's "Class 101 Rm 107" or "Class 5A", it's DATA not header
+                    import re
+                    if re.search(r'\bclass\s+\d+', cell_str, re.IGNORECASE):
+                        score -= 20  # Strong penalty - this is definitely data
+                        break
+        
+        # Common header keywords (only if they are the PRIMARY content, not just contained)
+        header_keywords = {
+            'name': ['name', 'student name', 'full name', 'child name'],
+            'student': ['student', 'student id'],
+            'class': ['class', 'class id', 'class section', 'section'],
+            'teacher': ['teacher', 'teacher name', 'instructor'],
+            'first': ['first', 'first name', 'fname', 'given name', "child's first name", 'childs first name'],
+            'last': ['last', 'last name', 'lname', 'surname', "child's last name", 'childs last name'],
+            'id': ['id', 'student id', 'class id'],
+            'grade': ['grade', 'grade level'],
+            'advisor': ['advisor', 'adviser'],
+            'email': ['email', 'e-mail'],
+            'phone': ['phone', 'telephone']
+        }
+        
+        for cell in row:
+            if cell is None:
+                continue
+            cell_str = str(cell).lower().strip()
+            
+            # Check if cell content is PRIMARILY a header keyword (not just contains it)
+            # Example: "Name" scores high, "John Name" does not
+            if len(cell_str) < 30:  # Headers are usually short
+                for keyword, variations in header_keywords.items():
+                    for variation in variations:
+                        # Must be exact match or very close
+                        if cell_str == variation or cell_str.replace('_', ' ') == variation:
+                            score += 10
+                            break
+        
+        # Check text vs numeric ratio
         text_count = 0
+        numeric_count = 0
         total_count = 0
+        proper_name_count = 0
         
         for cell in row:
             if cell is not None:
                 total_count += 1
                 if isinstance(cell, str) and len(str(cell).strip()) > 0:
                     text_count += 1
+                    # Check if it looks like actual data (proper names with multiple words)
+                    cell_str = str(cell).strip()
+                    # "JOHN SMITH" or "Mary Jane" - probably data
+                    if len(cell_str) > 5 and ' ' in cell_str:
+                        words = cell_str.split()
+                        if len(words) >= 2:
+                            proper_name_count += 1
+                elif isinstance(cell, (int, float)):
+                    numeric_count += 1
         
-        # Header row should be mostly text and have multiple columns
-        return total_count >= 2 and (text_count / total_count) >= 0.7
+        # If multiple cells look like proper names, probably data not headers
+        if proper_name_count >= 2:
+            score -= 10
+        
+        # Bonus if mostly text
+        if total_count > 0 and (text_count / total_count) >= 0.7:
+            score += 3
+        
+        # Penalty if mostly numeric
+        if total_count > 0 and (numeric_count / total_count) > 0.5:
+            score -= 5
+        
+        return score
     
     def _clean_header(self, header) -> str:
         """Clean header name"""
@@ -1102,6 +1189,28 @@ class JSONUniversalCleaningStage(DataCleaningStage):
             
             # Match headers to fields
             field_indices = self._match_headers_to_fields(headers, field_patterns)
+            
+            # If no student name field matched but we have data, check if it's headerless ROCL format
+            # ROCL standardized format: Column 0 = Student Name, Column 1 = Class, Column 2 = Teacher
+            has_student_field = ('student_name' in field_indices or 
+                               ('first_name' in field_indices and 'last_name' in field_indices))
+            
+            if not has_student_field and rows and len(rows) > 0:
+                # Check if column 1 contains "Class XXX" patterns (80% of first 10 rows)
+                sample_rows = rows[:min(10, len(rows))]
+                class_pattern_count = sum(
+                    1 for row in sample_rows 
+                    if len(row) > 1 and row[1] and 'class' in str(row[1]).lower()
+                )
+                
+                if class_pattern_count >= len(sample_rows) * 0.8:
+                    print(f"  [Headerless ROCL] Detected standardized ROCL format without headers")
+                    # Assume standard ROCL column positions
+                    field_indices = {
+                        'student_name': 0,
+                        'class_id': 1,
+                        'teacher': 2 if len(headers) > 2 else None
+                    }
             
             # Process each row
             for row in rows:
