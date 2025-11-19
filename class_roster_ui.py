@@ -5,7 +5,7 @@ from abc import ABC, abstractmethod
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QLabel, QLineEdit, QFileDialog, QTextEdit,
-    QMessageBox, QGroupBox
+    QMessageBox, QGroupBox, QComboBox, QCheckBox
 )
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
 from PyQt6.QtGui import QFont
@@ -34,19 +34,39 @@ class PipelineStage(ABC):
 
 
 class DataCleaningStage(PipelineStage):
-    """Stage 1: Clean and normalize raw data from various school formats"""
+    """
+    Minimal base cleaning stage (for backwards compatibility).
+    
+    For JSON-First Universal mode, use JSONUniversalCleaningStage from cleaning_stages.py.
+    This base class is kept minimal to avoid UI file bloat.
+    """
+    
+    def __init__(self, export_json=False, json_output_path=None):
+        """
+        Initialize data cleaning stage.
+        
+        Args:
+            export_json: If True, export intermediate JSON for inspection
+            json_output_path: Path to save JSON file (optional)
+        """
+        self.export_json = export_json
+        self.json_output_path = json_output_path
     
     def process(self, data: dict) -> dict:
-        """Clean raw data - extend this with school-specific cleaning logic"""
-        # TODO: Add cleaning logic for different school formats
-        # - Normalize names (title case, trim whitespace)
-        # - Remove duplicate records
-        # - Handle missing/invalid data
-        # - Standardize phone numbers, IDs, etc.
+        """
+        Minimal processing - just pass through.
+        Override in subclasses for actual functionality.
+        """
+        wb_in = data.get("workbook")
+        if not wb_in:
+            raise ValueError("Input workbook not found")
+        
+        # Simple pass-through for backwards compatibility
+        data["cleaned_record_count"] = 0
         return data
     
     def get_stage_name(self) -> str:
-        return "Data Cleaning"
+        return "Basic Data Cleaning"
 
 
 class ClassSplittingStage(PipelineStage):
@@ -67,7 +87,14 @@ class ClassSplittingStage(PipelineStage):
         return {
             "class": ["CLASS", "Class", "Class Section ID", "Class Section", "Class ID"],
             "teacher": ["Teacher", "TEACHER"],
-            "student": ["Name", "Student", "STUDENT"]
+            "student": [
+                "Name",
+                "Student",
+                "STUDENT",
+                "Student Name",
+                "StudentName",
+                "Student Name(s)"
+            ]
         }
     
     def process(self, data: dict) -> dict:
@@ -100,12 +127,23 @@ class ClassSplittingStage(PipelineStage):
     
     def _find_column_index(self, header_row, candidates):
         """Find column index by matching against candidate names"""
-        normalized = {str(v).strip().lower(): i for i, v in enumerate(header_row) if v}
+        normalized = {}
+        for i, value in enumerate(header_row):
+            key = self._normalize_header(value)
+            if key:
+                normalized[key] = i
         for cand in candidates:
-            key = cand.strip().lower()
+            key = self._normalize_header(cand)
             if key in normalized:
                 return normalized[key]
         raise ValueError(f"Could not find any of headers: {candidates}")
+
+    @staticmethod
+    def _normalize_header(value):
+        if value is None:
+            return ""
+        normalized = re.sub(r"[^a-z0-9]+", " ", str(value).strip().lower())
+        return normalized.strip()
     
     def _group_by_class(self, worksheet, class_idx, teacher_idx, student_idx):
         """Group students by class, removing duplicates"""
@@ -135,10 +173,8 @@ class ClassSplittingStage(PipelineStage):
             # Use set to avoid duplicates
             groups[cls]["students"].add(student)
         
-        # Convert sets back to sorted lists
         for cls in groups:
             groups[cls]["students"] = sorted(groups[cls]["students"])
-        
         return groups
     
     def _create_output_workbook(self, groups):
@@ -158,7 +194,7 @@ class ClassSplittingStage(PipelineStage):
                 ws = wb_out.create_sheet(title)
             
             # Headers
-            ws["A1"] = "Student"
+            ws["A1"] = "Student Name"
             ws["B1"] = "Class"
             
             row_idx = 2
@@ -243,10 +279,11 @@ class ProcessingPipeline:
                     progress_callback("Saving output file...")
                 wb_out.save(output_path)
             else:
-                # For cleaning-only pipelines, save the modified input workbook
+                # For cleaning-only pipelines, save whichever workbook the stages produced
+                wb_to_save = data.get("workbook") or wb_in
                 if progress_callback:
                     progress_callback("Saving cleaned file...")
-                wb_in.save(output_path)
+                wb_to_save.save(output_path)
             
             # Generate result message
             if "class_groups" in data:
@@ -352,14 +389,29 @@ class ClassRosterGUI(QMainWindow):
         stage1_group = QGroupBox()
         stage1_layout = QVBoxLayout()
 
-        # School format selector
-        school_row = QHBoxLayout()
-        school_row.addWidget(QLabel("School Format:"))
-        self.school_selector = QLineEdit()
-        self.school_selector.setPlaceholderText("e.g., School A, School B, Custom...")
-        self.school_selector.setText("Default")
-        school_row.addWidget(self.school_selector)
-        stage1_layout.addLayout(school_row)
+        # Processing mode selector
+        mode_row = QHBoxLayout()
+        mode_row.addWidget(QLabel("Processing Mode:"))
+        self.processing_mode_options = {
+            "JSON-First Universal (Auto-detect fields)": "json_universal",
+            "ROCL fixed-width roster": "rocl",
+            "ROCL fixed-width roster + Advisor column": "rocl with advisor",
+            "Picture Day format (Multi-sheet)": "picture_day"
+        }
+        self.mode_selector = QComboBox()
+        self.mode_selector.setEditable(True)
+        self.mode_selector.addItems(self.processing_mode_options.keys())
+        self.mode_selector.setCurrentText("JSON-First Universal (Auto-detect fields)")
+        mode_row.addWidget(self.mode_selector)
+        stage1_layout.addLayout(mode_row)
+        
+        # JSON export option
+        json_row = QHBoxLayout()
+        self.json_export_checkbox = QCheckBox("Export JSON for inspection")
+        self.json_export_checkbox.setToolTip("Save intermediate JSON data for debugging/analysis")
+        json_row.addWidget(self.json_export_checkbox)
+        json_row.addStretch()
+        stage1_layout.addLayout(json_row)
 
         # Raw source file
         raw_source_row = QHBoxLayout()
@@ -616,11 +668,10 @@ class ClassRosterGUI(QMainWindow):
             self.raw_source_label.setText(file_path)
             self.log(f"Raw data file selected: {Path(file_path).name}")
             
-            # Auto-suggest standardized output
-            if not self.std_output_label.text():
-                source_path = Path(file_path)
-                suggested_output = source_path.parent / f"{source_path.stem}_STANDARDIZED.xlsx"
-                self.std_output_label.setText(str(suggested_output))
+            # Auto-update standardized output to match the new raw file
+            source_path = Path(file_path)
+            suggested_output = source_path.parent / f"{source_path.stem}_STANDARDIZED.xlsx"
+            self.std_output_label.setText(str(suggested_output))
             
             self.check_cleaning_ready()
 
@@ -651,7 +702,8 @@ class ClassRosterGUI(QMainWindow):
         """Start Stage 1: Data cleaning process"""
         raw_file = self.raw_source_label.text()
         std_file = self.std_output_label.text()
-        school_format = self.school_selector.text().strip()
+        selected_mode = self.mode_selector.currentText().strip()
+        processing_mode = self.processing_mode_options.get(selected_mode, selected_mode)
 
         if not raw_file or not std_file:
             QMessageBox.warning(self, "Missing Files", "Please select both raw data and output files.")
@@ -670,17 +722,51 @@ class ClassRosterGUI(QMainWindow):
 
         self.clean_btn.setEnabled(False)
         self.log_text.clear()
-        self.log(f"[STAGE 1] Starting data cleaning for {school_format}...")
+        self.log(f"[STAGE 1] Starting {selected_mode} processing...")
 
-        # Import here to avoid circular imports
-        from cleaning_stages import get_cleaning_only_pipeline
-        
-        pipeline = get_cleaning_only_pipeline(school_format)
+        # Get pipeline based on processing mode
+        pipeline = self._get_processing_pipeline(processing_mode, raw_file, std_file)
         
         self.clean_thread = ProcessThread(raw_file, std_file, pipeline)
         self.clean_thread.progress.connect(self.log)
         self.clean_thread.finished.connect(self.on_cleaning_finished)
         self.clean_thread.start()
+    
+    def _get_processing_pipeline(self, processing_mode: str, raw_file: str, std_file: str):
+        """Get appropriate pipeline based on processing mode"""
+        if processing_mode == "json_universal":
+            # JSON-First Universal mode - use new dedicated cleaning stage
+            json_export = self.json_export_checkbox.isChecked()
+            json_path = None
+            if json_export:
+                json_path = str(Path(std_file).with_suffix('.json'))
+            
+            from cleaning_stages import get_cleaning_only_pipeline
+            pipeline = get_cleaning_only_pipeline("json_universal")
+            # Set JSON export path on the stage
+            if pipeline.stages:
+                pipeline.stages[0].json_output_path = json_path
+            return pipeline
+        
+        elif processing_mode == "picture_day":
+            # Picture Day format
+            try:
+                from picture_day_cleaning_stage import PictureDayCleaningStage
+                return ProcessingPipeline(stages=[PictureDayCleaningStage()])
+            except ImportError:
+                self.log("Picture Day cleaning stage not available, using universal mode")
+                from cleaning_stages import get_cleaning_only_pipeline
+                return get_cleaning_only_pipeline("json_universal")
+        
+        else:
+            # Legacy ROCL formats
+            try:
+                from cleaning_stages import get_cleaning_only_pipeline
+                return get_cleaning_only_pipeline(processing_mode)
+            except ImportError:
+                self.log("ROCL cleaning stages not available, using universal mode")
+                from cleaning_stages import get_cleaning_only_pipeline
+                return get_cleaning_only_pipeline("json_universal")
 
     def on_cleaning_finished(self, success, message):
         """Handle Stage 1 completion"""
@@ -729,11 +815,15 @@ class ClassRosterGUI(QMainWindow):
             self.split_source_label.setText(file_path)
             self.log(f"Split input file selected: {Path(file_path).name}")
             
-            # Auto-suggest output
-            if not self.split_output_label.text():
-                source_path = Path(file_path)
-                suggested_output = source_path.parent / f"{source_path.stem}_BY_CLASS.xlsx"
-                self.split_output_label.setText(str(suggested_output))
+            # Also update Stage 1 standardized output if empty
+            if not self.std_output_label.text():
+                self.std_output_label.setText(file_path)
+                self.log(f"Stage 1 standardized output updated: {Path(file_path).name}")
+            
+            # Auto-update output for Stage 2 to match the new input file
+            source_path = Path(file_path)
+            suggested_output = source_path.parent / f"{source_path.stem}_BY_CLASS.xlsx"
+            self.split_output_label.setText(str(suggested_output))
             
             self.check_splitting_ready()
 
