@@ -671,19 +671,34 @@ class JSONUniversalCleaningStage(DataCleaningStage):
         # Extract data rows
         data_rows = []
         start_row = (header_row_idx + 1) if header_row_idx else 1
+        teacher_names = []  # Collect teacher names from label rows
         
         for row in worksheet.iter_rows(min_row=start_row, values_only=True):
             # Skip completely empty rows
             if not any(cell for cell in row):
                 continue
             
-            # Skip metadata/footer rows (Teacher:, Advisor:, etc.)
+            # Check if this is a "Teacher" label row - extract teacher name before skipping
+            if row[0] and str(row[0]).strip().lower() == 'teacher':
+                # Format: Teacher | Last Name | First Name
+                if len(row) >= 3 and row[1] and row[2]:
+                    teacher_last = str(row[1]).strip()
+                    teacher_first = str(row[2]).strip()
+                    teacher_full = f"{teacher_first} {teacher_last}"
+                    teacher_names.append(teacher_full)
+                continue  # Skip this metadata row
+            
+            # Skip other metadata/footer rows (Students, Advisor:, etc.)
             if row[0] and self._is_metadata_row(str(row[0])):
                 continue
             
             # Convert row to list and clean values
             cleaned_row = [self._clean_cell_value(cell) for cell in row]
             data_rows.append(cleaned_row)
+        
+        # If we found teacher names, combine them
+        if teacher_names and not metadata_teacher:
+            metadata_teacher = ' / '.join(teacher_names)
         
         return {
             'headers': headers,
@@ -984,6 +999,18 @@ class JSONUniversalCleaningStage(DataCleaningStage):
                             score += 10
                             break
         
+        # Special check: If first cell is exactly "Teacher" or "Students" followed by data values,
+        # this is likely a metadata/label row, not headers
+        if row and str(row[0]).strip().lower() in ['teacher', 'students', 'advisor']:
+            # Check if subsequent cells look like data (proper names)
+            if len(row) > 1:
+                next_cells = [str(cell).strip() for cell in row[1:3] if cell]
+                if len(next_cells) >= 1:
+                    # If next cell looks like a proper name (capitalized, not a header keyword)
+                    first_word = next_cells[0]
+                    if first_word and first_word[0].isupper() and first_word.lower() not in ['name', 'first', 'last', 'class', 'id']:
+                        score -= 15  # Strong penalty - this is metadata/label, not header
+        
         # Check text vs numeric ratio
         text_count = 0
         numeric_count = 0
@@ -1039,6 +1066,8 @@ class JSONUniversalCleaningStage(DataCleaningStage):
         
         Examples of metadata rows to skip:
         - "Teacher: Clever Caterpillars /Ms. Falleen and Ms. Kasandra"
+        - "Teacher" (standalone label)
+        - "Students" (standalone label)
         - "Advisor:"
         - "CLASS LIST"
         - "Site: Skillman..."
@@ -1046,7 +1075,12 @@ class JSONUniversalCleaningStage(DataCleaningStage):
         """
         text_lower = text.lower().strip()
         
-        # Common metadata patterns
+        # Exact match patterns (standalone labels)
+        exact_patterns = ['teacher', 'teachers', 'students', 'advisor', 'advisors', '#']
+        if text_lower in exact_patterns:
+            return True
+        
+        # Common metadata patterns (prefix matching)
         metadata_patterns = [
             'teacher:', 'advisor:', 'class list', 'site:', 'year:', 
             'ed director', 'family worker', 'total', 'count',
@@ -1058,8 +1092,8 @@ class JSONUniversalCleaningStage(DataCleaningStage):
             if pattern and text_lower.startswith(pattern):
                 return True
         
-        # Check if it's just numbers (like row numbers "#")
-        if text.strip() in ['#', '']:
+        # Check if it's just empty
+        if not text.strip():
             return True
         
         return False
